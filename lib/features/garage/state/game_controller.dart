@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../../services/ad_service.dart';
+import '../../../services/analytics_service.dart';
 import '../../../services/game_backend.dart';
+import '../../../services/missions_service.dart';
 import '../../../services/revenuecat_service.dart';
+import '../../../services/sound_service.dart';
 import '../model/appraiser.dart';
 import '../model/car.dart';
 import '../model/progression.dart';
@@ -14,11 +17,17 @@ class GameController extends ChangeNotifier {
     this._service, {
     this.adService,
     this.revenueCat,
+    this.missions,
+    this.analytics,
+    this.sounds,
     this.appraiser = const HeuristicCarAppraiser(),
   });
   final GameBackend _service;
   final AdService? adService;
   final RevenueCatService? revenueCat;
+  final MissionsService? missions;
+  final AnalyticsService? analytics;
+  final SoundService? sounds;
   final CarAppraiser appraiser;
   int get maxGarageSlots => lotMaxBays(lotLevel);
 
@@ -35,6 +44,7 @@ class GameController extends ChangeNotifier {
   int premiumCurrency = 0;
   bool vipGaragePass = false;
   bool isLoading = true;
+  String? loadError;
   String? lastMessage;
   IdleCatchUp? welcomeBack;
   Timer? _ticker;
@@ -69,6 +79,8 @@ class GameController extends ChangeNotifier {
     _setMessage(
       'Lot upgraded to level $lotLevel — $maxGarageSlots garage bays now.',
     );
+    missions?.record(MissionKind.upgradeAny);
+    analytics?.logUpgrade('lot', lotLevel);
     await _persist();
   }
 
@@ -86,10 +98,31 @@ class GameController extends ChangeNotifier {
     toolLevel++;
     final faster = ((1 - toolDurationMultiplier(toolLevel)) * 100).round();
     _setMessage('Tools upgraded to level $toolLevel — $faster% faster work.');
+    missions?.record(MissionKind.upgradeAny);
+    analytics?.logUpgrade('tools', toolLevel);
     await _persist();
   }
 
   Future<void> load() async {
+    _ticker?.cancel();
+    _barnFindTimer?.cancel();
+    isLoading = true;
+    loadError = null;
+    notifyListeners();
+    try {
+      await _loadUnsafe();
+    } catch (_) {
+      loadError =
+          'Could not reach the garage. Check your connection and retry.';
+      isLoading = false;
+      notifyListeners();
+      return;
+    }
+  }
+
+  Future<void> retryLoad() => load();
+
+  Future<void> _loadUnsafe() async {
     await _service.ensureAnonymousUser();
     final existing = await _service.loadState();
     cash = existing?.cash ?? 850;
@@ -110,8 +143,12 @@ class GameController extends ChangeNotifier {
       final catchUp = await _service.catchUpOnOpen();
       cash = catchUp.cash;
       cars = catchUp.cars;
-      // VIP players receive the server-calculated idle result silently.
-      welcomeBack = vipGaragePass ? null : catchUp;
+      // Only show the welcome-back screen when something actually happened
+      // while away. VIP players receive the server-calculated idle result
+      // silently.
+      final hasIdleProgress =
+          catchUp.cashEarned > 0 || catchUp.finishedCarCount > 0;
+      welcomeBack = (vipGaragePass || !hasIdleProgress) ? null : catchUp;
       barnFind ??= await _service.loadBarnFindOffer();
     } else {
       await _persist();
@@ -124,7 +161,12 @@ class GameController extends ChangeNotifier {
       if (cars.any((car) => car.isRunning)) notifyListeners();
     });
     _barnFindTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (barnFind == null) refreshBarnFind();
+      // Only hit the server when there is no live offer; the offer itself
+      // carries its expiry, so a fresh call every minute is wasted.
+      final offer = barnFind;
+      if (offer == null || offer.expiresAt.isBefore(DateTime.now().toUtc())) {
+        refreshBarnFind();
+      }
     });
     notifyListeners();
   }
@@ -143,27 +185,39 @@ class GameController extends ChangeNotifier {
       _setMessage('Not enough cash for that wreck.');
       return;
     }
-    final model = carModelCatalog.firstWhere(
-      (item) => item.tier == tier && !item.isVintage,
-    );
-    final car = Car(
-      id: '${DateTime.now().microsecondsSinceEpoch}',
-      tier: tier,
-      stage: RestorationStage.wrecked,
-      purchasedAt: DateTime.now().toUtc(),
-      modelId: model.id,
-    );
-    cash -= tier.purchasePrice;
-    cars = [...cars, car];
-    _setMessage('${model.name} wreck delivered to the garage.');
-    await _persist();
+    try {
+      final before = cars.map((car) => car.id).toSet();
+      final result = await _service.buyCar(tier: tier);
+      if (!result.accepted) {
+        _setMessage(result.message ?? 'Purchase failed. Try again.');
+        return;
+      }
+      cash = result.cash;
+      cars = result.cars;
+      collectionIds = result.collectionIds;
+      final added = result.cars.where((car) => !before.contains(car.id));
+      final name = added.isEmpty ? 'Wreck' : added.first.model.name;
+      final appraised = added.isEmpty
+          ? null
+          : added.first.effectiveSalePrice;
+      _setMessage(
+        appraised == null
+            ? '$name wreck delivered to the garage.'
+            : '$name wreck delivered — appraised at \$$appraised.',
+      );
+      analytics?.logBuy(tier.name);
+      unawaited(sounds?.cash());
+      notifyListeners();
+    } catch (_) {
+      _setMessage('Purchase failed. Check your connection and try again.');
+    }
   }
 
   Future<void> advanceStage(Car car) async {
     final next = car.stage.next;
     if (next == null) return;
     if (car.stageStartedAt != null &&
-        car.progressAt(DateTime.now().toUtc()) < 1) {
+        car.progressAt(DateTime.now().toUtc(), toolLevel: toolLevel) < 1) {
       _setMessage('This job is still in progress.');
       return;
     }
@@ -171,29 +225,48 @@ class GameController extends ChangeNotifier {
       _setMessage('You need ${car.restorationCost} more cash for this job.');
       return;
     }
-    cash -= car.restorationCost;
-    final updated = car.copyWith(
-      stage: next,
-      stageStartedAt: next == RestorationStage.detailed
-          ? null
-          : DateTime.now().toUtc(),
-    );
-    cars = cars.map((item) => item.id == car.id ? updated : item).toList();
-    if (next == RestorationStage.detailed) {
-      collectionIds = {...collectionIds, car.model.id};
+    try {
+      final result = await _service.advanceCarStage(carId: car.id);
+      if (!result.accepted) {
+        _setMessage(result.message ?? 'Could not start that job.');
+        return;
+      }
+      cash = result.cash;
+      cars = result.cars;
+      collectionIds = result.collectionIds;
+      _setMessage('${car.model.name} started ${next.label.toLowerCase()}.');
+      missions?.record(MissionKind.completeStages);
+      unawaited(sounds?.wrench());
+      notifyListeners();
+    } catch (_) {
+      _setMessage('Could not start that job. Check your connection.');
     }
-    _setMessage('${car.model.name} started ${next.label.toLowerCase()}.');
-    await _persist();
   }
 
-  Future<void> sell(Car car) async {
+  Future<void> sell(Car car, {bool haggled = false}) async {
     if (car.stage != RestorationStage.detailed) return;
-    final earnings = (car.tier.salePrice * earningsMultiplier).floor();
-    cash += earnings;
-    lifetimeEarnings += earnings;
-    cars = cars.where((item) => item.id != car.id).toList();
-    _setMessage('${car.model.name} sold for \$$earnings.');
-    await _persist();
+    try {
+      final result = await _service.sellCar(carId: car.id, haggled: haggled);
+      if (!result.accepted) {
+        _setMessage(result.message ?? 'Sale failed. Try again.');
+        return;
+      }
+      cash = result.cash;
+      cars = result.cars;
+      lifetimeEarnings = result.lifetimeEarnings;
+      _setMessage(
+        '${car.model.name} sold for \$${result.earnings}'
+        '${haggled ? ' — great haggling!' : '.'}',
+      );
+      missions?.record(MissionKind.sellCars);
+      missions?.record(MissionKind.earnFromSales, result.earnings);
+      analytics?.logSell(result.earnings, haggled);
+      unawaited(sounds?.cash());
+      notifyListeners();
+    } catch (_) {
+      _setMessage('Sale failed. Check your connection and try again.');
+      return;
+    }
     // Natural break point for an interstitial. VIP players never see ads,
     // and the ad service itself enforces its cooldown.
     if (!vipGaragePass) {
@@ -225,6 +298,9 @@ class GameController extends ChangeNotifier {
       collectionIds = result.collectionIds;
       barnFind = null;
       _setMessage('${offer.model.name} Barn Find added to the garage.');
+      missions?.record(MissionKind.claimBarnFind);
+      analytics?.logBarnFindClaim(wonMinigame);
+      unawaited(sounds?.success());
       return true;
     } catch (_) {
       _setMessage('That Barn Find is no longer available.');
@@ -249,10 +325,41 @@ class GameController extends ChangeNotifier {
       toolLevel = result.toolLevel;
       barnFind = null;
       _setMessage('Franchise launched in ${cityThemeFor(cityId).name}.');
+      analytics?.logFranchise(cityId);
       return result;
     } catch (_) {
       _setMessage('Franchising is not available yet.');
       return null;
+    }
+  }
+
+  /// Claim a completed daily-mission reward. The cash is granted by the
+  /// server (idempotent reward ID), never minted client-side.
+  Future<void> claimMissionReward(MissionDef def) async {
+    final missionSvc = missions;
+    if (missionSvc == null) return;
+    MissionProgress? progress;
+    for (final mission in missionSvc.missions) {
+      if (mission.def.kind == def.kind) progress = mission;
+    }
+    if (progress == null || !progress.complete || progress.claimed) return;
+    try {
+      final result = await _service.claimReward(
+        rewardId: missionSvc.rewardIdFor(def),
+        kind: RewardKind.missionBonus,
+        rewardAmount: def.reward,
+      );
+      if (!result.accepted) {
+        _setMessage('Mission reward already claimed.');
+        return;
+      }
+      cash = result.cash;
+      cars = result.cars;
+      missionSvc.markClaimed(def);
+      _setMessage('Mission complete! +\$${def.reward}.');
+      notifyListeners();
+    } catch (_) {
+      _setMessage('Could not claim the mission reward. Try again.');
     }
   }
 

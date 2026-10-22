@@ -1,7 +1,7 @@
 import '../features/garage/model/car.dart';
 import '../features/garage/model/progression.dart';
 
-enum RewardKind { doubleOfflineEarnings, finishRestoration }
+enum RewardKind { doubleOfflineEarnings, finishRestoration, missionBonus }
 
 enum ConsumableKind { timeSkip, barnFindBundle }
 
@@ -25,6 +25,7 @@ abstract interface class GameBackend {
     required String rewardId,
     required RewardKind kind,
     String? carId,
+    int? rewardAmount,
   });
   Future<BarnFindOffer?> loadBarnFindOffer();
   Future<BarnFindClaimResult> claimBarnFind({
@@ -38,6 +39,12 @@ abstract interface class GameBackend {
   });
   Future<void> syncVipStatus({required bool active});
   Future<RewardClaimResult> spendPremiumTimeSkip({required String carId});
+
+  /// Server-authoritative economy mutations. The server validates cash,
+  /// bay count, stage timing and prices, then returns the canonical state.
+  Future<CarTransactionResult> buyCar({required CarTier tier});
+  Future<CarTransactionResult> advanceCarStage({required String carId});
+  Future<SellResult> sellCar({required String carId, required bool haggled});
 }
 
 class GameRemoteState {
@@ -147,4 +154,38 @@ class ConsumableGrantResult {
   final bool accepted;
   final int premiumCurrency;
   final BarnFindOffer? barnFindOffer;
+}
+
+/// Result of a server-authoritative car mutation (buy / advance stage).
+class CarTransactionResult {
+  const CarTransactionResult({
+    required this.accepted,
+    required this.cash,
+    required this.cars,
+    required this.collectionIds,
+    this.message,
+  });
+  final bool accepted;
+  final int cash;
+  final List<Car> cars;
+  final Set<String> collectionIds;
+  final String? message;
+}
+
+/// Result of a server-authoritative sale.
+class SellResult {
+  const SellResult({
+    required this.accepted,
+    required this.cash,
+    required this.cars,
+    required this.earnings,
+    required this.lifetimeEarnings,
+    this.message,
+  });
+  final bool accepted;
+  final int cash;
+  final List<Car> cars;
+  final int earnings;
+  final int lifetimeEarnings;
+  final String? message;
 }

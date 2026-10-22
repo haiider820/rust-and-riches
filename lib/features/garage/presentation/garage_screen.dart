@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../services/game_backend.dart';
+import '../../../services/missions_service.dart';
 import '../model/car.dart';
 import '../model/progression.dart';
 import '../state/game_controller.dart';
@@ -25,6 +27,14 @@ class _GarageScreenState extends State<GarageScreen> {
   void initState() {
     super.initState();
     game.addListener(_onGameChanged);
+    _maybeShowOnboarding();
+  }
+
+  Future<void> _maybeShowOnboarding() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('seen_onboarding') == true || !mounted) return;
+    await showOnboardingDialog(context);
+    await prefs.setBool('seen_onboarding', true);
   }
 
   @override
@@ -38,6 +48,43 @@ class _GarageScreenState extends State<GarageScreen> {
   @override
   Widget build(BuildContext context) {
     if (game.isLoading) {
+      if (game.loadError != null) {
+        return Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.cloud_off_rounded,
+                    size: 56,
+                    color: Color(0xFFE76F3C),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    game.loadError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: game.retryLoad,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: const Text('Retry'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF27343A),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
@@ -106,6 +153,8 @@ class _GarageScreenState extends State<GarageScreen> {
             _header(context),
             const SizedBox(height: 10),
             _upgradesCard(game),
+            const SizedBox(height: 10),
+            _missionsCard(game),
             Phase6MonetizationPanel(game: game),
             const SizedBox(height: 10),
             Row(
@@ -230,6 +279,112 @@ class _GarageScreenState extends State<GarageScreen> {
             ),
         ],
       );
+
+  Widget _missionsCard(GameController game) {
+    final missions = game.missions;
+    if (missions == null) return const SizedBox.shrink();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.emoji_events_rounded,
+                  color: Color(0xFFE76F3C),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Daily missions',
+                  style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                ),
+                const Spacer(),
+                Chip(
+                  avatar: const Icon(
+                    Icons.local_fire_department_rounded,
+                    size: 16,
+                    color: Colors.deepOrange,
+                  ),
+                  label: Text(
+                    '${missions.streak} day streak',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            for (final mission in missions.missions)
+              _missionRow(game, mission),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _missionRow(GameController game, MissionProgress mission) {
+    final def = mission.def;
+    final done = mission.complete;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  def.title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                  value: (mission.progress / def.target).clamp(0, 1).toDouble(),
+                  minHeight: 6,
+                  borderRadius: BorderRadius.circular(4),
+                  backgroundColor: const Color(0xFFE4E9E7),
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    Color(0xFF5DA87B),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          if (mission.claimed)
+            const Chip(
+              label: Text('Claimed', style: TextStyle(fontSize: 11)),
+              visualDensity: VisualDensity.compact,
+            )
+          else if (done)
+            FilledButton(
+              onPressed: () => game.claimMissionReward(def),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF5DA87B),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text('+\$${def.reward}'),
+            )
+          else
+            Text(
+              '${mission.progress}/${def.target}',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF7E8B88),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _barnFindCard(BarnFindOffer offer) => Card(
     color: const Color(0xFFFFF2D4),
@@ -369,6 +524,20 @@ class _GarageScreenState extends State<GarageScreen> {
               _stageChip(car.stage),
             ],
           ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                'Appraised \$${car.effectiveSalePrice}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF7B61B5),
+                ),
+              ),
+            ),
+          ),
           CarSprite(car: car),
           if (car.isRunning) ...[
             Align(
@@ -434,8 +603,16 @@ class _GarageScreenState extends State<GarageScreen> {
               if (car.stage == RestorationStage.detailed) ...[
                 const SizedBox(width: 8),
                 IconButton.filled(
-                  tooltip: 'Sell for \$${car.tier.salePrice}',
-                  onPressed: () => game.sell(car),
+                  tooltip: 'Sell for \$${car.effectiveSalePrice}',
+                  onPressed: () async {
+                    final haggled = await showNegotiationDialog(
+                      context,
+                      game,
+                      car,
+                    );
+                    if (haggled == null || !context.mounted) return;
+                    await game.sell(car, haggled: haggled);
+                  },
                   icon: const Icon(Icons.sell_rounded),
                   style: IconButton.styleFrom(
                     backgroundColor: const Color(0xFFE76F3C),
@@ -631,4 +808,141 @@ class WelcomeBackScreen extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// First-run tutorial shown once. Three quick steps, no account needed.
+Future<void> showOnboardingDialog(BuildContext context) => showDialog(
+  context: context,
+  barrierDismissible: false,
+  builder: (_) => const _OnboardingDialog(),
+);
+
+class _OnboardingDialog extends StatefulWidget {
+  const _OnboardingDialog();
+
+  @override
+  State<_OnboardingDialog> createState() => _OnboardingDialogState();
+}
+
+class _OnboardingDialogState extends State<_OnboardingDialog> {
+  final _pages = PageController();
+  int _index = 0;
+
+  static const _steps = [
+    (
+      icon: Icons.directions_car_rounded,
+      title: 'Buy a wreck',
+      body:
+          'Pick a Common, Rare or Classic wreck from the auctions. '
+          'Each car is appraised on the spot — the price you see is the '
+          'price you will actually get.',
+    ),
+    (
+      icon: Icons.handyman_rounded,
+      title: 'Restore it stage by stage',
+      body:
+          'Wrecked → Stripped → Repaired → Painted → Detailed. '
+          'Each job takes real time, but upgrades, barn finds and ads '
+          'can speed things up.',
+    ),
+    (
+      icon: Icons.handshake_rounded,
+      title: 'Sell high — and haggle!',
+      body:
+          'Hit SELL, stop the marker in the gold zone and pocket +10%. '
+          'Daily missions and streaks keep the cash flowing. Have fun!',
+    ),
+  ];
+
+  @override
+  void dispose() {
+    _pages.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      content: SizedBox(
+        width: 320,
+        height: 300,
+        child: Column(
+          children: [
+            Expanded(
+              child: PageView.builder(
+                controller: _pages,
+                onPageChanged: (index) => setState(() => _index = index),
+                itemCount: _steps.length,
+                itemBuilder: (_, index) {
+                  final step = _steps[index];
+                  return Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        step.icon,
+                        size: 64,
+                        color: const Color(0xFFE76F3C),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        step.title,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        step.body,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF5A6663),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (var i = 0; i < _steps.length; i++)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: i == _index
+                          ? const Color(0xFFE76F3C)
+                          : const Color(0xFFD8DFDD),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            FilledButton(
+              onPressed: () {
+                if (_index < _steps.length - 1) {
+                  _pages.nextPage(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOut,
+                  );
+                } else {
+                  Navigator.pop(context);
+                }
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF27343A),
+                minimumSize: const Size(160, 44),
+              ),
+              child: Text(_index < _steps.length - 1 ? 'Next' : "Let's go"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

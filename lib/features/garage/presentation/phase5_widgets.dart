@@ -1,4 +1,6 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../model/car.dart';
 import '../model/progression.dart';
@@ -154,10 +156,70 @@ class ProfileStatsScreen extends StatelessWidget {
             ),
             _stat('Current lot level', '${game.lotLevel}'),
             _stat('Current tool level', '${game.toolLevel}'),
+            const SizedBox(height: 12),
+            _accountCard(context),
           ],
         ),
       ),
     );
+  }
+
+  /// Upgrade the anonymous account to a Google-linked account so progress
+  /// survives reinstalls. Graceful when Firebase/Google sign-in is not
+  /// configured yet (demo mode, placeholder firebase_options).
+  Widget _accountCard(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Save your garage',
+            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Link a Google account to keep your progress if you reinstall.',
+            style: TextStyle(fontSize: 13, color: Color(0xFF5A6663)),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: () => _linkGoogle(context),
+            icon: const Icon(Icons.account_circle_rounded),
+            label: const Text('Link Google account'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF27343A),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Future<void> _linkGoogle(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final signIn = GoogleSignIn.instance;
+      await signIn.initialize();
+      final account = await signIn.authenticate();
+      final idToken = account.authentication.idToken;
+      if (idToken == null) throw StateError('No ID token.');
+      final credential = GoogleAuthProvider.credential(idToken: idToken);
+      await FirebaseAuth.instance.currentUser?.linkWithCredential(credential);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Google account linked — progress is safe.'),
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Account linking needs the production Firebase + Google sign-in setup.',
+          ),
+        ),
+      );
+    }
   }
 
   Widget _stat(String label, String value) => Card(

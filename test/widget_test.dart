@@ -87,6 +87,7 @@ class _FakeBackend implements GameBackend {
     required String rewardId,
     required RewardKind kind,
     String? carId,
+    int? rewardAmount,
   }) async => const RewardClaimResult(accepted: false, cash: 850, cars: []);
 
   @override
@@ -94,6 +95,37 @@ class _FakeBackend implements GameBackend {
     required String transactionId,
     required ConsumableKind kind,
   }) async => const ConsumableGrantResult(accepted: false, premiumCurrency: 0);
+
+  @override
+  Future<CarTransactionResult> buyCar({required CarTier tier}) async =>
+      CarTransactionResult(
+        accepted: false,
+        cash: 0,
+        cars: const [],
+        collectionIds: const {},
+        message: 'Demo backend does not support purchases.',
+      );
+
+  @override
+  Future<CarTransactionResult> advanceCarStage({required String carId}) async =>
+      CarTransactionResult(
+        accepted: false,
+        cash: 0,
+        cars: const [],
+        collectionIds: const {},
+      );
+
+  @override
+  Future<SellResult> sellCar({
+    required String carId,
+    required bool haggled,
+  }) async => const SellResult(
+    accepted: false,
+    cash: 0,
+    cars: [],
+    earnings: 0,
+    lifetimeEarnings: 0,
+  );
 
   @override
   Future<void> syncVipStatus({required bool active}) async {}

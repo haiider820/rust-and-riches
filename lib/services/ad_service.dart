@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -27,9 +26,9 @@ class AdService {
   static const _iosInterstitialId = 'ca-app-pub-3940256099942544/4411468910';
 
   String get _rewardedUnitId =>
-      Platform.isIOS ? _iosRewardedId : _androidRewardedId;
+      defaultTargetPlatform == TargetPlatform.iOS ? _iosRewardedId : _androidRewardedId;
   String get _interstitialUnitId =>
-      Platform.isIOS ? _iosInterstitialId : _androidInterstitialId;
+      defaultTargetPlatform == TargetPlatform.iOS ? _iosInterstitialId : _androidInterstitialId;
 
   static Future<void> initialize() async {
     await MobileAds.instance.initialize();

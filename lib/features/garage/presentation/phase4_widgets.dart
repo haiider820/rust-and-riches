@@ -170,6 +170,127 @@ class _BarnFindDialogState extends State<_BarnFindDialog> {
   }
 }
 
+/// Negotiation mini-game shown before a sale. Stopping the marker inside the
+/// gold zone grants +10% on the sale price (applied server-side).
+Future<bool?> showNegotiationDialog(
+  BuildContext context,
+  GameController game,
+  Car car,
+) => showDialog<bool>(
+  context: context,
+  builder: (_) => _NegotiationDialog(game: game, car: car),
+);
+
+class _NegotiationDialog extends StatefulWidget {
+  const _NegotiationDialog({required this.game, required this.car});
+  final GameController game;
+  final Car car;
+
+  @override
+  State<_NegotiationDialog> createState() => _NegotiationDialogState();
+}
+
+class _NegotiationDialogState extends State<_NegotiationDialog> {
+  Timer? _timer;
+  double marker = 0;
+  bool settled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(milliseconds: 24), (_) {
+      if (!mounted || settled) return;
+      setState(() => marker = (marker + .017) % 1);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _stop() {
+    if (settled) return;
+    settled = true;
+    const targetStart = .42;
+    const targetWidth = .16;
+    final won =
+        marker >= targetStart && marker <= targetStart + targetWidth;
+    Navigator.pop(context, won);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = widget.car.effectiveSalePrice;
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.handshake_rounded, color: Color(0xFFE76F3C)),
+          SizedBox(width: 8),
+          Text('Haggle the price'),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Buyer offers \$$base for the ${widget.car.model.name}.\nStop in the gold zone for +10%.',
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            height: 28,
+            child: LayoutBuilder(
+              builder: (_, constraints) => Stack(
+                children: [
+                  Positioned(
+                    left: constraints.maxWidth * .42,
+                    top: 4,
+                    width: constraints.maxWidth * .16,
+                    height: 20,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF2C14E),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: (constraints.maxWidth - 8) * marker,
+                    top: 0,
+                    child: Container(
+                      width: 8,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF27343A),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Tap STOP when the marker is inside the gold zone.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Take the offer'),
+        ),
+        FilledButton(onPressed: _stop, child: const Text('STOP')),
+      ],
+    );
+  }
+}
+
 class GarageShowroomScreen extends StatelessWidget {
   const GarageShowroomScreen({
     required this.collectionIds,

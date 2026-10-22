@@ -115,9 +115,173 @@ void main() {
       expect(car.stageDurationFor(5).inMilliseconds, 10200);
     });
   });
+
+  group('server-authoritative economy', () {
+    test('buy applies the server result and shows the appraisal', () async {
+      final backend = _FakeBackend()..cash = 5000;
+      final game = GameController(backend)
+        ..cash = 5000
+        ..lotLevel = 1;
+      await game.buy(CarTier.common);
+
+      expect(game.cars, hasLength(1));
+      expect(game.cash, 5000 - CarTier.common.purchasePrice);
+      expect(backend.cash, game.cash);
+      expect(game.cars.first.salePrice, isNotNull);
+      expect(game.lastMessage, contains('appraised'));
+    });
+
+    test('advanceStage applies the server result', () async {
+      final backend = _FakeBackend()..cash = 5000;
+      final game = GameController(backend)
+        ..cash = 5000
+        ..lotLevel = 1;
+      await game.buy(CarTier.common);
+      final car = game.cars.first;
+      await game.advanceStage(car);
+
+      expect(game.cars.first.stage, RestorationStage.stripped);
+      expect(game.cash, 5000 - CarTier.common.purchasePrice - 25);
+    });
+
+    test('sell grants haggled bonus when won', () async {
+      final backend = _FakeBackend()..cash = 5000;
+      final game = GameController(backend)
+        ..cash = 5000
+        ..lotLevel = 1;
+      await game.buy(CarTier.common);
+      final car = game.cars.first.copyWith(
+        stage: RestorationStage.detailed,
+        stageStartedAt: null,
+      );
+      backend.cars = [car];
+      game.cars = [car];
+
+      await game.sell(car, haggled: true);
+      final expected = (car.effectiveSalePrice * 1.1).floor();
+      expect(game.cash, 5000 - CarTier.common.purchasePrice + expected);
+      expect(game.cars, isEmpty);
+      expect(game.lastMessage, contains('haggling'));
+    });
+
+    test('salePrice survives serialization', () {
+      final car = Car(
+        id: 'car-9',
+        tier: CarTier.rare,
+        stage: RestorationStage.detailed,
+        purchasedAt: DateTime.fromMillisecondsSinceEpoch(0),
+        salePrice: 1234,
+      );
+      final roundTripped = Car.fromJson(car.toJson());
+      expect(roundTripped.salePrice, 1234);
+      expect(roundTripped.effectiveSalePrice, 1234);
+      // Legacy saves without a rolled price fall back to the tier price.
+      final legacy = Car.fromJson({
+        'id': 'old',
+        'tier': 'common',
+        'stage': 'detailed',
+        'purchasedAt': '2026-01-01T00:00:00.000Z',
+      });
+      expect(legacy.effectiveSalePrice, CarTier.common.salePrice);
+    });
+  });
 }
 
 class _FakeBackend implements GameBackend {
+  int cash = 850;
+  List<Car> cars = [];
+  Set<String> collectionIds = {};
+  int lifetimeEarnings = 0;
+
+  /// Mirrors the server's buyCar rules so controller wiring is testable.
+  @override
+  Future<CarTransactionResult> buyCar({required CarTier tier}) async {
+    if (cash < tier.purchasePrice) {
+      return CarTransactionResult(
+        accepted: false,
+        cash: cash,
+        cars: List.of(cars),
+        collectionIds: Set.of(collectionIds),
+        message: 'Not enough cash for that wreck.',
+      );
+    }
+    cash -= tier.purchasePrice;
+    final car = Car(
+      id: 'fake-${cars.length}-${DateTime.now().microsecondsSinceEpoch}',
+      tier: tier,
+      stage: RestorationStage.wrecked,
+      purchasedAt: DateTime.now().toUtc(),
+      modelId: 'sunny_hatch',
+      salePrice: tier.salePrice + 10,
+    );
+    cars = [...cars, car];
+    return CarTransactionResult(
+      accepted: true,
+      cash: cash,
+      cars: List.of(cars),
+      collectionIds: Set.of(collectionIds),
+    );
+  }
+
+  @override
+  Future<CarTransactionResult> advanceCarStage({required String carId}) async {
+    final index = cars.indexWhere((car) => car.id == carId);
+    if (index < 0) {
+      return CarTransactionResult(
+        accepted: false,
+        cash: cash,
+        cars: List.of(cars),
+        collectionIds: Set.of(collectionIds),
+      );
+    }
+    final car = cars[index];
+    final next = car.stage.next;
+    if (next == null || cash < car.restorationCost) {
+      return CarTransactionResult(
+        accepted: false,
+        cash: cash,
+        cars: List.of(cars),
+        collectionIds: Set.of(collectionIds),
+        message: 'Could not start that job.',
+      );
+    }
+    cash -= car.restorationCost;
+    final updated = car.copyWith(
+      stage: next,
+      stageStartedAt: next == RestorationStage.detailed
+          ? null
+          : DateTime.now().toUtc(),
+    );
+    cars = cars.map((item) => item.id == carId ? updated : item).toList();
+    if (next == RestorationStage.detailed) {
+      collectionIds = {...collectionIds, car.model.id};
+    }
+    return CarTransactionResult(
+      accepted: true,
+      cash: cash,
+      cars: List.of(cars),
+      collectionIds: Set.of(collectionIds),
+    );
+  }
+
+  @override
+  Future<SellResult> sellCar({
+    required String carId,
+    required bool haggled,
+  }) async {
+    final car = cars.firstWhere((item) => item.id == carId);
+    final earnings = (car.effectiveSalePrice * (haggled ? 1.1 : 1)).floor();
+    cash += earnings;
+    lifetimeEarnings += earnings;
+    cars = cars.where((item) => item.id != carId).toList();
+    return SellResult(
+      accepted: true,
+      cash: cash,
+      cars: List.of(cars),
+      earnings: earnings,
+      lifetimeEarnings: lifetimeEarnings,
+    );
+  }
   @override
   Future<void> ensureAnonymousUser() async {}
 
@@ -172,6 +336,7 @@ class _FakeBackend implements GameBackend {
     required String rewardId,
     required RewardKind kind,
     String? carId,
+    int? rewardAmount,
   }) async => const RewardClaimResult(accepted: false, cash: 0, cars: []);
 
   @override

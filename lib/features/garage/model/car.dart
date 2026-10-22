@@ -214,6 +214,7 @@ class Car {
     this.stageStartedAt,
     this.modelId,
     this.isBarnFind = false,
+    this.salePrice,
   });
 
   final String id;
@@ -223,6 +224,13 @@ class Car {
   final DateTime? stageStartedAt;
   final String? modelId;
   final bool isBarnFind;
+
+  /// Rolled appraisal value assigned when the car is bought/claimed.
+  /// Null for saves written before Phase 8 — falls back to the tier price.
+  final int? salePrice;
+
+  /// The price this car will actually sell for.
+  int get effectiveSalePrice => salePrice ?? tier.salePrice;
 
   CarModelDefinition get model => modelForId(modelId ?? '${tier.name}_default');
   int get restorationCost => switch (stage) {
@@ -253,7 +261,11 @@ class Car {
 
   bool get isRunning => stageStartedAt != null && stage.next != null;
 
-  Car copyWith({RestorationStage? stage, DateTime? stageStartedAt}) => Car(
+  Car copyWith({
+    RestorationStage? stage,
+    DateTime? stageStartedAt,
+    int? salePrice,
+  }) => Car(
     id: id,
     tier: tier,
     stage: stage ?? this.stage,
@@ -261,6 +273,7 @@ class Car {
     stageStartedAt: stageStartedAt,
     modelId: modelId,
     isBarnFind: isBarnFind,
+    salePrice: salePrice ?? this.salePrice,
   );
 
   Map<String, dynamic> toJson() => {
@@ -271,6 +284,7 @@ class Car {
     'stageStartedAt': stageStartedAt?.toIso8601String(),
     'modelId': modelId,
     'isBarnFind': isBarnFind,
+    'salePrice': salePrice,
   };
 
   factory Car.fromJson(Map<String, dynamic> json) => Car(
@@ -283,6 +297,7 @@ class Car {
         : DateTime.parse(json['stageStartedAt'] as String),
     modelId: json['modelId'] as String?,
     isBarnFind: json['isBarnFind'] as bool? ?? false,
+    salePrice: (json['salePrice'] as num?)?.toInt(),
   );
 
   static String encodeList(List<Car> cars) =>

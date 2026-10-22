@@ -189,13 +189,16 @@ class FirebaseGameService implements GameBackend {
     required String rewardId,
     required RewardKind kind,
     String? carId,
+    int? rewardAmount,
   }) async {
+    final payload = <String, dynamic>{
+      'rewardId': rewardId,
+      'kind': kind.name,
+      'carId': carId,
+    };
+    if (rewardAmount != null) payload['rewardAmount'] = rewardAmount;
     final data = Map<String, dynamic>.from(
-      (await _functions.httpsCallable('claimReward').call({
-            'rewardId': rewardId,
-            'kind': kind.name,
-            'carId': carId,
-          })).data
+      (await _functions.httpsCallable('claimReward').call(payload)).data
           as Map,
     );
     return RewardClaimResult(
@@ -220,6 +223,62 @@ class FirebaseGameService implements GameBackend {
       vipAutoCollected: data['vipAutoCollected'] == true,
     );
   }
+
+  @override
+  Future<CarTransactionResult> buyCar({required CarTier tier}) async {
+    final data = Map<String, dynamic>.from(
+      (await _functions.httpsCallable('buyCar').call({
+            'tier': tier.name,
+          })).data
+          as Map,
+    );
+    return _decodeTransaction(data);
+  }
+
+  @override
+  Future<CarTransactionResult> advanceCarStage({required String carId}) async {
+    final data = Map<String, dynamic>.from(
+      (await _functions.httpsCallable('advanceCarStage').call({
+            'carId': carId,
+          })).data
+          as Map,
+    );
+    return _decodeTransaction(data);
+  }
+
+  @override
+  Future<SellResult> sellCar({
+    required String carId,
+    required bool haggled,
+  }) async {
+    final data = Map<String, dynamic>.from(
+      (await _functions.httpsCallable('sellCar').call({
+            'carId': carId,
+            'haggled': haggled,
+          })).data
+          as Map,
+    );
+    return SellResult(
+      accepted: data['accepted'] == true,
+      cash: (data['cash'] as num).toInt(),
+      cars: _decodeCars(data['cars']),
+      earnings: (data['earnings'] as num).toInt(),
+      lifetimeEarnings: (data['lifetimeEarnings'] as num).toInt(),
+      message: data['message'] as String?,
+    );
+  }
+
+  CarTransactionResult _decodeTransaction(Map<String, dynamic> data) =>
+      CarTransactionResult(
+        accepted: data['accepted'] == true,
+        cash: (data['cash'] as num).toInt(),
+        cars: _decodeCars(data['cars']),
+        collectionIds: {
+          ...(data['collectionIds'] as List<dynamic>? ?? const [])
+              .cast<String>(),
+        },
+        message: data['message'] as String?,
+      );
 
   List<Car> _decodeCars(dynamic rawCars) =>
       (rawCars as List<dynamic>? ?? const [])

@@ -12,6 +12,14 @@ const DURATION_SECONDS = {
   classic: { wrecked: 40, stripped: 50, repaired: 60, painted: 30 },
 };
 const SALE_PRICE = { common: 360, rare: 1180, classic: 2900 };
+const PURCHASE_PRICE = { common: 120, rare: 420, classic: 950 };
+const RESTORATION_COST = {
+  wrecked: 25,
+  stripped: 55,
+  repaired: 70,
+  painted: 40,
+  detailed: 0,
+};
 const MAX_IDLE_SECONDS = 60 * 60 * 24 * 30;
 
 // Phase 7 upgrade formulas. These mirror lib/features/garage/model/progression.dart
@@ -25,6 +33,25 @@ const toolDurationMultiplier = (level) =>
     0.6,
     1 - 0.08 * (Math.min(MAX_TOOL_LEVEL, Math.max(1, Number(level) || 1)) - 1),
   );
+
+// Phase 8: honest appraiser. Every car gets a rolled sale price inside the
+// appraiser's advertised profit range, stored on the car. Mirrors
+// HeuristicCarAppraiser in lib/features/garage/model/appraiser.dart.
+const appraiserProfitRange = (tier, isVintage) => {
+  const base = (SALE_PRICE[tier] || 0) - (PURCHASE_PRICE[tier] || 0);
+  const bonus = isVintage ? 90 : tier === 'classic' ? 55 : tier === 'rare' ? 30 : 0;
+  return {
+    low: Math.round((base + bonus) * 0.75),
+    high: Math.round((base + bonus) * 1.2),
+  };
+};
+const rollSalePrice = (tier, basePurchasePrice, isVintage) => {
+  const { low, high } = appraiserProfitRange(tier, isVintage);
+  const profit = low + Math.floor(Math.random() * (high - low + 1));
+  return basePurchasePrice + profit;
+};
+const reputationMultiplierFor = (reputationPoints, vipGaragePass) =>
+  (1 + Number(reputationPoints || 0) * 0.1) * (vipGaragePass === true ? 1.2 : 1);
 
 exports.catchUpOnOpen = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) {
@@ -47,7 +74,10 @@ exports.catchUpOnOpen = onCall({ region: 'us-central1' }, async (request) => {
 
     let cash = Number(data.cash || 0);
     let cashEarned = 0;
-    const reputationMultiplier = (1 + Number(data.reputationPoints || 0) * 0.1) * (data.vipGaragePass === true ? 1.2 : 1);
+    const reputationMultiplier = reputationMultiplierFor(
+      data.reputationPoints,
+      data.vipGaragePass,
+    );
     let finishedCarCount = 0;
     const cars = Array.isArray(data.cars) ? data.cars : [];
     const nextCars = [];
@@ -73,7 +103,8 @@ exports.catchUpOnOpen = onCall({ region: 'us-central1' }, async (request) => {
         const stageIndex = STAGE_ORDER.indexOf(stage);
         stage = STAGE_ORDER[stageIndex + 1];
         if (stage === 'detailed') {
-          const baseSale = SALE_PRICE[car.tier] || 0;
+          // Phase 8: each car carries its rolled appraisal value.
+          const baseSale = Number(car.salePrice) || SALE_PRICE[car.tier] || 0;
           const multipliedSale = Math.floor(baseSale * reputationMultiplier);
           cash += multipliedSale;
           cashEarned += multipliedSale;
@@ -141,7 +172,7 @@ exports.claimReward = onCall({ region: 'us-central1' }, async (request) => {
   if (typeof rewardId !== 'string' || !/^[a-zA-Z0-9-]{12,120}$/.test(rewardId)) {
     throw new HttpsError('invalid-argument', 'A valid reward ID is required.');
   }
-  if (!['doubleOfflineEarnings', 'finishRestoration'].includes(kind)) {
+  if (!['doubleOfflineEarnings', 'finishRestoration', 'missionBonus'].includes(kind)) {
     throw new HttpsError('invalid-argument', 'Unsupported reward kind.');
   }
 
@@ -167,6 +198,12 @@ exports.claimReward = onCall({ region: 'us-central1' }, async (request) => {
       const pending = Number(data.lastIdleCashEarned || 0);
       cash += pending;
       transaction.set(playerRef, { cash, lastIdleCashEarned: 0, lastRewardAt: Timestamp.now() }, { merge: true });
+    } else if (kind === 'missionBonus') {
+      // Daily-mission reward. The amount is server-capped so a tampered
+      // client cannot mint arbitrary cash.
+      const amount = Math.min(500, Math.max(50, Math.floor(Number(request.data.rewardAmount) || 0)));
+      cash += amount;
+      transaction.set(playerRef, { cash, lastRewardAt: Timestamp.now() }, { merge: true });
     } else {
       if (typeof carId !== 'string') {
         throw new HttpsError('invalid-argument', 'A car is required for this reward.');
@@ -190,13 +227,143 @@ exports.claimReward = onCall({ region: 'us-central1' }, async (request) => {
 });
 
 
+// Phase 8: server-authoritative economy. Buy, stage advance and sell run in
+// transactions so a client can no longer mint cash by editing its own doc.
+const CAR_MODELS_BY_TIER = {
+  common: ['sunny_hatch', 'boxy_wagon', 'rust_runner'],
+  rare: ['midnight_gt', 'redline_coupe', 'coastal_roadster'],
+  classic: ['golden_v8', 'velvet_cruiser', 'heritage_special'],
+};
+
+exports.buyCar = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Anonymous authentication is required.');
+  const { tier } = request.data || {};
+  if (!['common', 'rare', 'classic'].includes(tier)) {
+    throw new HttpsError('invalid-argument', 'A valid car tier is required.');
+  }
+  const playerRef = db.collection('players').doc(request.auth.uid);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(playerRef);
+    if (!snapshot.exists) throw new HttpsError('failed-precondition', 'Player state does not exist.');
+    const data = snapshot.data() || {};
+    const cars = Array.isArray(data.cars) ? data.cars.map((car) => ({ ...car })) : [];
+    if (cars.length >= lotMaxBays(data.lotLevel)) {
+      throw new HttpsError('failed-precondition', 'All garage bays are occupied.');
+    }
+    const price = PURCHASE_PRICE[tier];
+    const cash = Number(data.cash || 0);
+    if (cash < price) throw new HttpsError('failed-precondition', 'Not enough cash for that wreck.');
+    const now = Timestamp.now();
+    const models = CAR_MODELS_BY_TIER[tier];
+    const modelId = models[Math.floor(Math.random() * models.length)];
+    const car = {
+      id: `car-${now.toMillis()}-${Math.floor(Math.random() * 100000)}`,
+      tier,
+      stage: 'wrecked',
+      purchasedAt: now.toDate().toISOString(),
+      stageStartedAt: null,
+      modelId,
+      isBarnFind: false,
+      salePrice: rollSalePrice(tier, price, false),
+    };
+    const nextCash = cash - price;
+    const nextCars = [...cars, car];
+    transaction.set(playerRef, { cash: nextCash, cars: nextCars, lastSavedAt: now }, { merge: true });
+    return { accepted: true, cash: nextCash, cars: nextCars, collectionIds: data.collectionIds || [] };
+  });
+});
+
+exports.advanceCarStage = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Anonymous authentication is required.');
+  const { carId } = request.data || {};
+  if (typeof carId !== 'string') throw new HttpsError('invalid-argument', 'A car ID is required.');
+  const playerRef = db.collection('players').doc(request.auth.uid);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(playerRef);
+    if (!snapshot.exists) throw new HttpsError('failed-precondition', 'Player state does not exist.');
+    const data = snapshot.data() || {};
+    const cars = Array.isArray(data.cars) ? data.cars.map((car) => ({ ...car })) : [];
+    const index = cars.findIndex((car) => car.id === carId);
+    if (index < 0) throw new HttpsError('failed-precondition', 'That car is not in your garage.');
+    const car = cars[index];
+    const stageIndex = STAGE_ORDER.indexOf(car.stage);
+    if (stageIndex < 0 || stageIndex >= STAGE_ORDER.length - 1) {
+      throw new HttpsError('failed-precondition', 'That car is already fully restored.');
+    }
+    // The current stage must have been started and its (tool-scaled) timer elapsed.
+    const toolMultiplier = toolDurationMultiplier(data.toolLevel);
+    const baseDuration = DURATION_SECONDS[car.tier]?.[car.stage];
+    if (!baseDuration) throw new HttpsError('failed-precondition', 'That restoration stage is invalid.');
+    const duration = Math.max(1, Math.round(baseDuration * toolMultiplier));
+    const startedAt = car.stageStartedAt ? new Date(car.stageStartedAt).getTime() : NaN;
+    // A fresh wreck has no timer yet — the first advance starts the job.
+    const isFirstStart = !car.stageStartedAt && car.stage === 'wrecked';
+    if (!isFirstStart && (!Number.isFinite(startedAt) || Date.now() - startedAt < duration * 1000)) {
+      throw new HttpsError('failed-precondition', 'This job is still in progress.');
+    }
+    const cost = RESTORATION_COST[car.stage] ?? 0;
+    const cash = Number(data.cash || 0);
+    if (cash < cost) throw new HttpsError('failed-precondition', 'Not enough cash for this job.');
+    const nextStage = STAGE_ORDER[stageIndex + 1];
+    const now = Timestamp.now();
+    const updated = {
+      ...car,
+      stage: nextStage,
+      stageStartedAt: nextStage === 'detailed' ? null : now.toDate().toISOString(),
+    };
+    cars[index] = updated;
+    const collectionIds = new Set(data.collectionIds || []);
+    if (nextStage === 'detailed' && car.modelId) collectionIds.add(car.modelId);
+    const nextCash = cash - cost;
+    transaction.set(
+      playerRef,
+      { cash: nextCash, cars, collectionIds: [...collectionIds], lastSavedAt: now },
+      { merge: true },
+    );
+    return { accepted: true, cash: nextCash, cars, collectionIds: [...collectionIds] };
+  });
+});
+
+exports.sellCar = onCall({ region: 'us-central1' }, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Anonymous authentication is required.');
+  const { carId, haggled } = request.data || {};
+  if (typeof carId !== 'string') throw new HttpsError('invalid-argument', 'A car ID is required.');
+  const playerRef = db.collection('players').doc(request.auth.uid);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(playerRef);
+    if (!snapshot.exists) throw new HttpsError('failed-precondition', 'Player state does not exist.');
+    const data = snapshot.data() || {};
+    const cars = Array.isArray(data.cars) ? data.cars.map((car) => ({ ...car })) : [];
+    const index = cars.findIndex((car) => car.id === carId);
+    if (index < 0 || cars[index].stage !== 'detailed') {
+      throw new HttpsError('failed-precondition', 'That car is not ready to sell.');
+    }
+    const car = cars[index];
+    const baseSale = Number(car.salePrice) || SALE_PRICE[car.tier] || 0;
+    const multiplier = reputationMultiplierFor(data.reputationPoints, data.vipGaragePass);
+    // Phase 8: the negotiation mini-game grants +10% when the player wins it.
+    const earnings = Math.floor(baseSale * multiplier * (haggled === true ? 1.1 : 1));
+    const cash = Number(data.cash || 0) + earnings;
+    const lifetimeEarnings = Number(data.lifetimeEarnings || 0) + earnings;
+    const nextCars = cars.filter((item) => item.id !== carId);
+    const now = Timestamp.now();
+    transaction.set(
+      playerRef,
+      { cash, cars: nextCars, lifetimeEarnings, lastSavedAt: now },
+      { merge: true },
+    );
+    return { accepted: true, cash, cars: nextCars, earnings, lifetimeEarnings };
+  });
+});
+
+
 const BARN_FIND_MODELS = [
-  { id: 'golden_v8', tier: 'classic', basePrice: 950 },
-  { id: 'velvet_cruiser', tier: 'classic', basePrice: 950 },
-  { id: 'heritage_special', tier: 'classic', basePrice: 950 },
-  { id: 'midnight_gt', tier: 'rare', basePrice: 420 },
-  { id: 'redline_coupe', tier: 'rare', basePrice: 420 },
-  { id: 'coastal_roadster', tier: 'rare', basePrice: 420 },
+  { id: 'golden_v8', tier: 'classic', basePrice: 950, vintage: true },
+  { id: 'velvet_cruiser', tier: 'classic', basePrice: 950, vintage: true },
+  { id: 'heritage_special', tier: 'classic', basePrice: 950, vintage: true },
+  { id: 'midnight_gt', tier: 'rare', basePrice: 420, vintage: false },
+  { id: 'redline_coupe', tier: 'rare', basePrice: 420, vintage: false },
+  { id: 'coastal_roadster', tier: 'rare', basePrice: 420, vintage: false },
 ];
 const BARN_FIND_GAP_SECONDS = 15 * 60;
 const BARN_FIND_LIFETIME_SECONDS = 5 * 60;
@@ -269,6 +436,7 @@ exports.claimBarnFind = onCall({ region: 'us-central1' }, async (request) => {
       stageStartedAt: null,
       modelId: model.id,
       isBarnFind: true,
+      salePrice: rollSalePrice(model.tier, model.basePrice, model.vintage === true),
     };
     const nextCars = [...cars, car];
     transaction.set(playerRef, { cash: nextCash, cars: nextCars, barnFind: null, lastSavedAt: now, schemaVersion: 4 }, { merge: true });

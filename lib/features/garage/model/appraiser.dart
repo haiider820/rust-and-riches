@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'car.dart';
 
 class Appraisal {
@@ -48,4 +50,26 @@ class HeuristicCarAppraiser implements CarAppraiser {
           : 'Repair first to protect the resale value, then finish the presentation work.',
     );
   }
+}
+
+/// Rolls a concrete sale price inside the appraiser's advertised profit
+/// range. Used by the demo backend and tests; the production roll happens
+/// server-side in `functions/index.js` (`rollSalePrice`) — keep both in sync.
+int rollAppraisedSalePrice(
+  CarTier tier,
+  int basePurchasePrice,
+  bool isVintage, {
+  Random? random,
+}) {
+  final appraisal = const HeuristicCarAppraiser().evaluate(
+    tier: tier,
+    isVintage: isVintage,
+  );
+  final rng = random ?? Random();
+  final profit =
+      appraisal.lowProfit +
+      rng.nextInt(
+        appraisal.highProfit - appraisal.lowProfit + 1,
+      );
+  return basePurchasePrice + profit;
 }

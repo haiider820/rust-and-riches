@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'package:purchases_flutter/purchases_flutter.dart';
 
@@ -13,7 +13,7 @@ class RevenueCatConfig {
   final String androidApiKey;
   final String iosApiKey;
 
-  String get currentApiKey => Platform.isIOS ? iosApiKey : androidApiKey;
+  String get currentApiKey => defaultTargetPlatform == TargetPlatform.iOS ? iosApiKey : androidApiKey;
 }
 
 class RevenueCatService {
