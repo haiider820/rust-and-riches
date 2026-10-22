@@ -14,6 +14,18 @@ const DURATION_SECONDS = {
 const SALE_PRICE = { common: 360, rare: 1180, classic: 2900 };
 const MAX_IDLE_SECONDS = 60 * 60 * 24 * 30;
 
+// Phase 7 upgrade formulas. These mirror lib/features/garage/model/progression.dart
+// (lotMaxBays / toolDurationMultiplier) — keep both sides in sync.
+const MAX_LOT_LEVEL = 5;
+const MAX_TOOL_LEVEL = 5;
+const lotMaxBays = (level) =>
+  1 + Math.min(MAX_LOT_LEVEL, Math.max(1, Number(level) || 1));
+const toolDurationMultiplier = (level) =>
+  Math.max(
+    0.6,
+    1 - 0.08 * (Math.min(MAX_TOOL_LEVEL, Math.max(1, Number(level) || 1)) - 1),
+  );
+
 exports.catchUpOnOpen = onCall({ region: 'us-central1' }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Anonymous authentication is required.');
@@ -47,9 +59,12 @@ exports.catchUpOnOpen = onCall({ region: 'us-central1' }, async (request) => {
       let stageStartedAt = car.stageStartedAt ? new Date(car.stageStartedAt) : null;
 
       // A car only consumes idle time once a stage has been explicitly started.
+      // Stage durations scale with the player's tool level, mirroring the client.
+      const toolMultiplier = toolDurationMultiplier(data.toolLevel);
       while (stageStartedAt && stage !== 'detailed' && remaining > 0) {
-        const duration = DURATION_SECONDS[car.tier]?.[stage];
-        if (!duration) break;
+        const baseDuration = DURATION_SECONDS[car.tier]?.[stage];
+        if (!baseDuration) break;
+        const duration = Math.max(1, Math.round(baseDuration * toolMultiplier));
         const stageEndsAt = Math.floor(stageStartedAt.getTime() / 1000) + duration;
         const available = Math.floor((now.toMillis() / 1000) - (stageStartedAt.getTime() / 1000));
         if (available < duration) break;
@@ -244,7 +259,7 @@ exports.claimBarnFind = onCall({ region: 'us-central1' }, async (request) => {
     const model = BARN_FIND_MODELS.find((item) => item.id === offer.modelId);
     if (!model) throw new HttpsError('failed-precondition', 'Unknown Barn Find model.');
     const cars = Array.isArray(data.cars) ? data.cars.map((car) => ({ ...car })) : [];
-    if (cars.length >= 2) throw new HttpsError('failed-precondition', 'Both garage bays are occupied.');
+    if (cars.length >= lotMaxBays(data.lotLevel)) throw new HttpsError('failed-precondition', 'All garage bays are occupied.');
     const nextCash = wonMinigame ? cash : cash - price;
     const car = {
       id: `barn-car-${now.toMillis()}`,

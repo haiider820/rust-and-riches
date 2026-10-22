@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../services/game_backend.dart';
 import '../model/car.dart';
+import '../model/progression.dart';
 import '../state/game_controller.dart';
 import '../widgets/car_sprite.dart';
 import 'phase4_widgets.dart';
@@ -103,6 +104,8 @@ class _GarageScreenState extends State<GarageScreen> {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
           children: [
             _header(context),
+            const SizedBox(height: 10),
+            _upgradesCard(game),
             Phase6MonetizationPanel(game: game),
             const SizedBox(height: 10),
             Row(
@@ -135,7 +138,7 @@ class _GarageScreenState extends State<GarageScreen> {
             const SizedBox(height: 16),
             _sectionTitle(
               'Your garage',
-              '${game.cars.length}/${GameController.maxGarageSlots} bays',
+              '${game.cars.length}/${game.maxGarageSlots} bays',
             ),
             const SizedBox(height: 10),
             if (game.cars.isEmpty)
@@ -151,6 +154,82 @@ class _GarageScreenState extends State<GarageScreen> {
       ),
     );
   }
+
+  Widget _upgradesCard(GameController game) => Card(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        children: [
+          _upgradeRow(
+            icon: Icons.warehouse_rounded,
+            title: 'Garage lot',
+            subtitle:
+                'Level ${game.lotLevel} • ${game.maxGarageSlots} bays${game.lotUpgradePrice == null ? ' • MAX' : ''}',
+            price: game.lotUpgradePrice,
+            canAfford: game.canUpgradeLot,
+            onUpgrade: game.upgradeLot,
+          ),
+          const Divider(height: 20),
+          _upgradeRow(
+            icon: Icons.handyman_rounded,
+            title: 'Tools',
+            subtitle:
+                'Level ${game.toolLevel} • ${((1 - toolDurationMultiplier(game.toolLevel)) * 100).round()}% faster${game.toolUpgradePrice == null ? ' • MAX' : ''}',
+            price: game.toolUpgradePrice,
+            canAfford: game.canUpgradeTools,
+            onUpgrade: game.upgradeTools,
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _upgradeRow({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required int? price,
+    required bool canAfford,
+    required VoidCallback onUpgrade,
+  }) =>
+      Row(
+        children: [
+          Icon(icon, color: const Color(0xFFE76F3C)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w900),
+                ),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7E8B88),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (price == null)
+            const Chip(
+              label: Text('MAX'),
+              backgroundColor: Color(0xFFDDF2D7),
+            )
+          else
+            FilledButton(
+              onPressed: canAfford ? onUpgrade : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF27343A),
+              ),
+              child: Text('Upgrade \$$price'),
+            ),
+        ],
+      );
 
   Widget _barnFindCard(BarnFindOffer offer) => Card(
     color: const Color(0xFFFFF2D4),
@@ -317,7 +396,10 @@ class _GarageScreenState extends State<GarageScreen> {
               ),
             ),
             LinearProgressIndicator(
-              value: car.progressAt(DateTime.now().toUtc()),
+              value: car.progressAt(
+                DateTime.now().toUtc(),
+                toolLevel: game.toolLevel,
+              ),
               minHeight: 8,
               borderRadius: BorderRadius.circular(8),
               color: const Color(0xFFE76F3C),

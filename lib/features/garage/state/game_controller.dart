@@ -20,7 +20,7 @@ class GameController extends ChangeNotifier {
   final AdService? adService;
   final RevenueCatService? revenueCat;
   final CarAppraiser appraiser;
-  static const maxGarageSlots = 2;
+  int get maxGarageSlots => lotMaxBays(lotLevel);
 
   int cash = 0;
   List<Car> cars = const [];
@@ -46,6 +46,48 @@ class GameController extends ChangeNotifier {
   bool get canFranchise => lifetimeEarnings >= franchiseThreshold;
   Appraisal appraise(CarTier tier, {bool isVintage = false}) =>
       appraiser.evaluate(tier: tier, isVintage: isVintage);
+
+  int? get lotUpgradePrice => lotUpgradeCost[lotLevel];
+  int? get toolUpgradePrice => toolUpgradeCost[toolLevel];
+  bool get canUpgradeLot =>
+      lotUpgradePrice != null && cash >= lotUpgradePrice!;
+  bool get canUpgradeTools =>
+      toolUpgradePrice != null && cash >= toolUpgradePrice!;
+
+  Future<void> upgradeLot() async {
+    final price = lotUpgradePrice;
+    if (price == null) {
+      _setMessage('The lot is already at max level.');
+      return;
+    }
+    if (cash < price) {
+      _setMessage('You need \$$price cash for the lot upgrade.');
+      return;
+    }
+    cash -= price;
+    lotLevel++;
+    _setMessage(
+      'Lot upgraded to level $lotLevel — $maxGarageSlots garage bays now.',
+    );
+    await _persist();
+  }
+
+  Future<void> upgradeTools() async {
+    final price = toolUpgradePrice;
+    if (price == null) {
+      _setMessage('Your tools are already top of the line.');
+      return;
+    }
+    if (cash < price) {
+      _setMessage('You need \$$price cash for the tool upgrade.');
+      return;
+    }
+    cash -= price;
+    toolLevel++;
+    final faster = ((1 - toolDurationMultiplier(toolLevel)) * 100).round();
+    _setMessage('Tools upgraded to level $toolLevel — $faster% faster work.');
+    await _persist();
+  }
 
   Future<void> load() async {
     await _service.ensureAnonymousUser();
@@ -92,7 +134,9 @@ class GameController extends ChangeNotifier {
 
   Future<void> buy(CarTier tier) async {
     if (cars.length >= maxGarageSlots) {
-      _setMessage('Both garage bays are occupied. Finish a car first.');
+      _setMessage(
+        'All $maxGarageSlots garage bays are occupied. Finish a car first.',
+      );
       return;
     }
     if (cash < tier.purchasePrice) {
@@ -150,6 +194,16 @@ class GameController extends ChangeNotifier {
     cars = cars.where((item) => item.id != car.id).toList();
     _setMessage('${car.model.name} sold for \$$earnings.');
     await _persist();
+    // Natural break point for an interstitial. VIP players never see ads,
+    // and the ad service itself enforces its cooldown.
+    if (!vipGaragePass) {
+      unawaited(
+        adService?.maybeShowInterstitial(
+          isRestoring: cars.any((item) => item.isRunning),
+          isSelling: false,
+        ),
+      );
+    }
   }
 
   Future<void> refreshBarnFind() async {

@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'progression.dart';
+
 enum CarTier { common, rare, classic }
 
 enum RestorationStage { wrecked, stripped, repaired, painted, detailed }
@@ -232,11 +234,19 @@ class Car {
   };
   Duration get stageDuration => tier.durationFor(stage);
 
-  double progressAt(DateTime now) {
+  /// Stage duration after the player's tool-level speed bonus.
+  Duration stageDurationFor(int toolLevel) => Duration(
+    milliseconds:
+        (stageDuration.inMilliseconds * toolDurationMultiplier(toolLevel))
+            .round(),
+  );
+
+  double progressAt(DateTime now, {int toolLevel = 1}) {
     final started = stageStartedAt;
     if (started == null) return 0;
+    final scaled = stageDurationFor(toolLevel);
     return ((now.difference(started).inMilliseconds /
-                stageDuration.inMilliseconds)
+                scaled.inMilliseconds)
             .clamp(0, 1))
         .toDouble();
   }

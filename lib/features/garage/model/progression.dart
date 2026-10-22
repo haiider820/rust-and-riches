@@ -2,6 +2,27 @@ import 'package:flutter/material.dart';
 
 const franchiseThreshold = 10_000;
 
+/// Lot (garage) upgrades. Each lot level adds one garage bay:
+/// level 1 -> 2 bays, level 5 -> 6 bays.
+const maxLotLevel = 5;
+
+/// Cost in cash to upgrade the lot FROM the keyed level to the next one.
+/// No entry means the lot is already at max level.
+const lotUpgradeCost = <int, int>{1: 1200, 2: 3000, 3: 6000, 4: 10000};
+
+int lotMaxBays(int lotLevel) => 1 + lotLevel.clamp(1, maxLotLevel);
+
+/// Tool upgrades. Each tool level speeds up every restoration stage by 8%
+/// (multiplicative on the base durations), floored at 60% of base time.
+const maxToolLevel = 5;
+
+/// Cost in cash to upgrade tools FROM the keyed level to the next one.
+/// No entry means the tools are already at max level.
+const toolUpgradeCost = <int, int>{1: 600, 2: 1500, 3: 3000, 4: 5000};
+
+double toolDurationMultiplier(int toolLevel) =>
+    (1 - 0.08 * (toolLevel.clamp(1, maxToolLevel) - 1)).clamp(0.6, 1.0);
+
 class CityTheme {
   const CityTheme({
     required this.id,
